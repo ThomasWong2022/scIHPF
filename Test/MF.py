@@ -18,35 +18,6 @@ from MulticoreTSNE import MulticoreTSNE as TSNE
 # Numba calculations
 from numba import njit, prange
 
-# Require Python libraries
-# schpf
-
-import schpf
-
-
-# Require R libraries
-# SPARSim, pCMF
-import rpy2
-from rpy2.rinterface import RRuntimeError
-from rpy2.robjects.packages import importr
-from rpy2.robjects import FloatVector
-from rpy2.robjects import numpy2ri
-
-numpy2ri.activate()
-
-try:
-    CMF = importr("pCMF")
-except RRuntimeError:
-    print("pCMF Not Installed")
-
-
-# User defined scripts
-try:
-    import Utility.likelihood as likelihood
-    import Utility.NMFEM as NMFEM
-except:
-    pass
-
 
 ##################################################################################
 ## Loss functions
