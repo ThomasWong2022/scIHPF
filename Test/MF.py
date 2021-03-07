@@ -18,6 +18,12 @@ from MulticoreTSNE import MulticoreTSNE as TSNE
 # Numba calculations
 from numba import njit, prange
 
+# Require Python libraries
+# schpf
+
+import schpf
+
+
 
 ##################################################################################
 ## Loss functions
