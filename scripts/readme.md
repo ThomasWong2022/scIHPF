@@ -10,7 +10,7 @@ To rerun the data generation process, the raw count data needs to be stored in t
 
 main.py stores the parameters and file locations to run the grid search for hyper-parameters and cell clustering of data integration. 
 
-hyper benchmark 
+Different options such as hyper, benchmark, integration_geneselection, integration_hyper corresponds to results in different sections in the paper.
 
 
 ## Visualisation 
