@@ -129,3 +129,5 @@ dmypy.json
 .pyre/
 
 Data/*.h5ad
+Data/scgen/data/*.h5ad
+Data/temp/*.h5ad

@@ -544,7 +544,7 @@ if __name__ == "__main__":
     task = sys.argv[2]
     start = int(sys.argv[3])
 
-    np.random.seed(42)
+    np.random.seed(0)
 
     datamapping = {
         1: "pancreas_inDrop",
