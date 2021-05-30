@@ -14,6 +14,7 @@ from warnings import warn
 import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.special import digamma, gammaln, psi
+
 try:
     from scipy.misc import logsumexp
 except ImportError:
@@ -32,12 +33,19 @@ gammaln_ftype = ctypes.CFUNCTYPE(ctypes.c_double, ctypes.c_double)
 cgammaln = gammaln_ftype(gammaln_fnaddr)
 
 
-# Compute poisson likelihood for a batch of datasets 
+# Compute poisson likelihood for a batch of datasets
 @numba.njit(parallel=True, nogil=True, fastmath=True)
-def compute_pois_llh2(X_data, X_row, X_col,
-                     theta_vi_shape, theta_vi_rate,
-                     beta_vi_shape, beta_vi_rate,
-                     delta_vi_shape, delta_vi_rate):
+def compute_pois_llh2(
+    X_data,
+    X_row,
+    X_col,
+    theta_vi_shape,
+    theta_vi_rate,
+    beta_vi_shape,
+    beta_vi_rate,
+    delta_vi_shape,
+    delta_vi_rate,
+):
     ncells, ngenes = (theta_vi_shape.shape[0], beta_vi_shape.shape[0])
     nfactors, nnz = (theta_vi_shape.shape[1], X_data.shape[0])
     dtype = theta_vi_shape.dtype
@@ -46,36 +54,43 @@ def compute_pois_llh2(X_data, X_row, X_col,
     theta_e_x = np.zeros_like(theta_vi_shape, dtype=dtype)
     for i in numba.prange(ncells):
         for k in range(nfactors):
-            theta_e_x[i,k] = theta_vi_shape[i,k] / theta_vi_rate[i,k]
+            theta_e_x[i, k] = theta_vi_shape[i, k] / theta_vi_rate[i, k]
 
     beta_e_x = np.zeros_like(beta_vi_shape, dtype=dtype)
     for i in numba.prange(ngenes):
         for k in range(nfactors):
-            beta_e_x[i,k] = beta_vi_shape[i,k] / beta_vi_rate[i,k]
+            beta_e_x[i, k] = beta_vi_shape[i, k] / beta_vi_rate[i, k]
 
     delta_e_x = np.zeros_like(delta_vi_shape, dtype=dtype)
     for i in numba.prange(ngenes):
         for k in range(nfactors):
-            delta_e_x[i,k] = delta_vi_shape[i,k] / delta_vi_rate[i,k]
-
+            delta_e_x[i, k] = delta_vi_shape[i, k] / delta_vi_rate[i, k]
 
     # compute llh
     llh = np.zeros(X_data.shape, dtype=dtype)
     for i in numba.prange(nnz):
         e_rate = np.zeros(1, dtype=dtype)[0]
         for k in range(nfactors):
-            e_rate += theta_e_x[X_row[i],k] * (beta_e_x[X_col[i], k] + delta_e_x[X_col[i], k]) 
-        llh[i] = X_data[i] * np.log(e_rate) - e_rate \
-            - cgammaln(X_data[i] + 1.0)
+            e_rate += theta_e_x[X_row[i], k] * (
+                beta_e_x[X_col[i], k] + delta_e_x[X_col[i], k]
+            )
+        llh[i] = X_data[i] * np.log(e_rate) - e_rate - cgammaln(X_data[i] + 1.0)
     return llh
 
 
 @numba.njit(parallel=True, nogil=True)
-def compute_Xphi_data(X_data, X_row, X_col,
-                     theta_vi_shape, theta_vi_rate,
-                     beta_vi_shape, beta_vi_rate,
-                     delta_vi_shape, delta_vi_rate):
-    """ Fast version of Xphi computation using numba & gsl_digamma
+def compute_Xphi_data(
+    X_data,
+    X_row,
+    X_col,
+    theta_vi_shape,
+    theta_vi_rate,
+    beta_vi_shape,
+    beta_vi_rate,
+    delta_vi_shape,
+    delta_vi_rate,
+):
+    """Fast version of Xphi computation using numba & gsl_digamma
 
     Parameters
     ----------
@@ -103,49 +118,47 @@ def compute_Xphi_data(X_data, X_row, X_col,
     theta_e_logx = np.zeros_like(theta_vi_shape, dtype=dtype)
     for i in numba.prange(ncells):
         for k in range(nfactors):
-            theta_e_logx[i,k] = psi(theta_vi_shape[i,k]) \
-                                - np.log(theta_vi_rate[i,k])
+            theta_e_logx[i, k] = psi(theta_vi_shape[i, k]) - np.log(theta_vi_rate[i, k])
 
     # precompute beta.e_logx
     beta_e_logx = np.zeros_like(beta_vi_shape, dtype=dtype)
     for i in numba.prange(ngenes):
         for k in range(nfactors):
-            beta_e_logx[i,k] = psi(beta_vi_shape[i,k]) \
-                               - np.log(beta_vi_rate[i,k])
+            beta_e_logx[i, k] = psi(beta_vi_shape[i, k]) - np.log(beta_vi_rate[i, k])
 
     # precompute delta.e_logx
     delta_e_logx = np.zeros_like(delta_vi_shape, dtype=dtype)
     for i in numba.prange(ngenes):
         for k in range(nfactors):
-            delta_e_logx[i,k] = psi(delta_vi_shape[i,k]) \
-                               - np.log(delta_vi_rate[i,k])
+            delta_e_logx[i, k] = psi(delta_vi_shape[i, k]) - np.log(delta_vi_rate[i, k])
 
     # compute Xphi
-    # Scale shared and specific factors to create sparse factors 
-    Xphi = np.zeros((X_row.shape[0], theta_e_logx.shape[1]*2), dtype=dtype)
+    # Scale shared and specific factors to create sparse factors
+    Xphi = np.zeros((X_row.shape[0], theta_e_logx.shape[1] * 2), dtype=dtype)
     for i in numba.prange(nnz):
         logrho = np.zeros((Xphi.shape[1]), dtype=dtype)
         for k in range(nfactors):
-            logrho[k] = (theta_e_logx[X_row[i],k] + beta_e_logx[X_col[i], k]) * 1
+            logrho[k] = (theta_e_logx[X_row[i], k] + beta_e_logx[X_col[i], k]) * 1
         for k in range(nfactors):
-            logrho[k+nfactors] = (theta_e_logx[X_row[i],k] + delta_e_logx[X_col[i], k]) * 1
+            logrho[k + nfactors] = (
+                theta_e_logx[X_row[i], k] + delta_e_logx[X_col[i], k]
+            ) * 1
 
-        
-        #log normalizer trick
+        # log normalizer trick
         rho_shift = np.zeros((Xphi.shape[1]), dtype=dtype)
         normalizer = np.zeros(1, dtype=dtype)[0]
         largest_in = np.max(logrho)
-        for k in range(nfactors*2):
+        for k in range(nfactors * 2):
             rho_shift[k] = np.exp(logrho[k] - largest_in)
             normalizer += rho_shift[k]
 
-        for k in range(nfactors*2):
-            Xphi[i,k] = X_data[i] * rho_shift[k] / normalizer
+        for k in range(nfactors * 2):
+            Xphi[i, k] = X_data[i] * rho_shift[k] / normalizer
 
     return Xphi
 
 
-@numba.njit(fastmath=True) #results unstable with prange. don't do it.
+@numba.njit(fastmath=True)  # results unstable with prange. don't do it.
 def compute_loading_shape_update(Xphi_data, X_keep, nkeep, nfactors, shape_prior):
     """Compute gamma shape updates for theta or beta using numba
 
@@ -169,18 +182,22 @@ def compute_loading_shape_update(Xphi_data, X_keep, nkeep, nfactors, shape_prior
     dtype = Xphi_data.dtype
 
     result = shape_prior * np.ones((nkeep, nfactors), dtype=dtype)
-    
+
     for i in range(nnz):
         ikeep = X_keep[i]
         for k in range(nfactors):
-            result[ikeep, k] += Xphi_data[i,k+nfactors]
+            result[ikeep, k] += Xphi_data[i, k + nfactors]
 
     return result
 
 
 @numba.njit(fastmath=True)
-def compute_loading_rate_update(prior_vi_shape, prior_vi_rate,
-        other_loading_vi_shape, other_loading_vi_rate,):
+def compute_loading_rate_update(
+    prior_vi_shape,
+    prior_vi_rate,
+    other_loading_vi_shape,
+    other_loading_vi_rate,
+):
     # shorter names
     pvs, pvr = (prior_vi_shape, prior_vi_rate)
     olvs, olvr = (other_loading_vi_shape, other_loading_vi_rate)
@@ -189,7 +206,7 @@ def compute_loading_rate_update(prior_vi_shape, prior_vi_rate,
     other_loading_e_x_sum = np.zeros((olvs.shape[1]), dtype=dtype)
     for i in range(olvs.shape[0]):
         for k in range(olvs.shape[1]):
-            other_loading_e_x_sum[k] += olvs[i,k] / olvr[i,k]
+            other_loading_e_x_sum[k] += olvs[i, k] / olvr[i, k]
 
     result = np.zeros((pvs.shape[0], olvs.shape[1]), dtype=dtype)
 
@@ -203,15 +220,14 @@ def compute_loading_rate_update(prior_vi_shape, prior_vi_rate,
 @numba.njit(fastmath=True)
 def compute_capacity_rate_update(loading_vi_shape, loading_vi_rate, prior_rate):
     dtype = loading_vi_shape.dtype
-    result = prior_rate * np.ones((loading_vi_shape.shape[0],),
-            dtype=dtype)
+    result = prior_rate * np.ones((loading_vi_shape.shape[0],), dtype=dtype)
     for k in range(loading_vi_shape.shape[1]):
         for i in range(loading_vi_shape.shape[0]):
-            result[i] += loading_vi_shape[i,k] / loading_vi_rate[i,k]
+            result[i] += loading_vi_shape[i, k] / loading_vi_rate[i, k]
     return result
 
 
-@numba.njit(fastmath=True) #results unstable with prange. don't do it.
+@numba.njit(fastmath=True)  # results unstable with prange. don't do it.
 def compute_cell_shape_update(Xphi_data, X_keep, nkeep, nfactors, shape_prior):
     """Compute gamma shape updates for theta or beta using numba
 
@@ -238,11 +254,16 @@ def compute_cell_shape_update(Xphi_data, X_keep, nkeep, nfactors, shape_prior):
     for i in range(nnz):
         ikeep = X_keep[i]
         for k in range(nfactors):
-            result[ikeep, k] = result[ikeep, k] + Xphi_data[i,k] + Xphi_data[i,k+nfactors]
+            result[ikeep, k] = (
+                result[ikeep, k] + Xphi_data[i, k] + Xphi_data[i, k + nfactors]
+            )
     return result
 
-@numba.njit(fastmath=True) #results unstable with prange. don't do it.
-def compute_shared_shape_update(result, Xphi_data, X_keep, nkeep, nfactors, shape_prior):
+
+@numba.njit(fastmath=True)  # results unstable with prange. don't do it.
+def compute_shared_shape_update(
+    result, Xphi_data, X_keep, nkeep, nfactors, shape_prior
+):
     """Compute gamma shape updates for theta or beta using numba
 
     Parameters
@@ -264,16 +285,21 @@ def compute_shared_shape_update(result, Xphi_data, X_keep, nkeep, nfactors, shap
     nnz = Xphi_data.shape[0]
     dtype = Xphi_data.dtype
     for i in range(nnz):
-            ikeep = X_keep[i]
-            for k in range(nfactors):
-                result[ikeep, k] = result[ikeep, k] + Xphi_data[i,k]
+        ikeep = X_keep[i]
+        for k in range(nfactors):
+            result[ikeep, k] = result[ikeep, k] + Xphi_data[i, k]
     return result
 
 
 @numba.njit(fastmath=True)
-def compute_cell_rate_update(prior_vi_shape, prior_vi_rate,
-        other_loading_vi_shape, other_loading_vi_rate, 
-        additional_loading_vi_shape, additional_loading_vi_rate):
+def compute_cell_rate_update(
+    prior_vi_shape,
+    prior_vi_rate,
+    other_loading_vi_shape,
+    other_loading_vi_rate,
+    additional_loading_vi_shape,
+    additional_loading_vi_rate,
+):
     # shorter names
     pvs, pvr = (prior_vi_shape, prior_vi_rate)
     olvs, olvr = (other_loading_vi_shape, other_loading_vi_rate)
@@ -283,26 +309,32 @@ def compute_cell_rate_update(prior_vi_shape, prior_vi_rate,
     other_loading_e_x_sum = np.zeros((olvs.shape[1]), dtype=dtype)
     for i in range(olvs.shape[0]):
         for k in range(olvs.shape[1]):
-            other_loading_e_x_sum[k] += olvs[i,k] / olvr[i,k]
+            other_loading_e_x_sum[k] += olvs[i, k] / olvr[i, k]
 
     additional_loading_e_x_sum = np.zeros((alvs.shape[1]), dtype=dtype)
     for i in range(alvs.shape[0]):
         for k in range(alvs.shape[1]):
-            additional_loading_e_x_sum[k] += alvs[i,k] / alvr[i,k]
-    
+            additional_loading_e_x_sum[k] += alvs[i, k] / alvr[i, k]
 
     result = np.zeros((pvs.shape[0], olvs.shape[1]), dtype=dtype)
     for i in range(pvs.shape[0]):
         prior_e_x = pvs[i] / pvr[i]
         for k in range(olvs.shape[1]):
-            result[i, k] = prior_e_x + other_loading_e_x_sum[k] + additional_loading_e_x_sum[k]
+            result[i, k] = (
+                prior_e_x + other_loading_e_x_sum[k] + additional_loading_e_x_sum[k]
+            )
     return result
 
 
-
 @numba.njit(fastmath=True)
-def compute_shared_rate_update(result, prior_vi_shape, prior_vi_rate,
-        other_loading_vi_shape, other_loading_vi_rate, firstupdate):
+def compute_shared_rate_update(
+    result,
+    prior_vi_shape,
+    prior_vi_rate,
+    other_loading_vi_shape,
+    other_loading_vi_rate,
+    firstupdate,
+):
     # shorter names
     pvs, pvr = (prior_vi_shape, prior_vi_rate)
     olvs, olvr = (other_loading_vi_shape, other_loading_vi_rate)
@@ -312,16 +344,16 @@ def compute_shared_rate_update(result, prior_vi_shape, prior_vi_rate,
 
     for i in range(olvs.shape[0]):
         for k in range(olvs.shape[1]):
-            other_loading_e_x_sum[k] += olvs[i,k] / olvr[i,k]
+            other_loading_e_x_sum[k] += olvs[i, k] / olvr[i, k]
 
     for i in range(pvs.shape[0]):
         prior_e_x = pvs[i] / pvr[i]
         if firstupdate:
             for k in range(olvs.shape[1]):
-                result[i, k] = prior_e_x  + other_loading_e_x_sum[k]
+                result[i, k] = prior_e_x + other_loading_e_x_sum[k]
         else:
             for k in range(olvs.shape[1]):
-                result[i, k] = result[i, k]  + other_loading_e_x_sum[k]
+                result[i, k] = result[i, k] + other_loading_e_x_sum[k]
     return result
 
 
@@ -331,8 +363,9 @@ given dataset
 
 """
 
+
 def loss_function_for_data(loss_function, X):
-    """ Get a loss function for a fixed dataset
+    """Get a loss function for a fixed dataset
 
     Parameters
     ----------
@@ -350,7 +383,9 @@ def loss_function_for_data(loss_function, X):
     """
     return functools.partial(loss_function, X=X)
 
+
 #### Loss functions
+
 
 def pois_llh_pointwise(X, *, theta, beta, **kwargs):
     """Poisson log-likelihood for each nonzero entry
@@ -376,11 +411,17 @@ def pois_llh_pointwise(X, *, theta, beta, **kwargs):
     will accept unused keyword args.
     """
     try:
-        llh = compute_pois_llh(X.data, X.row, X.col,
-                                theta.vi_shape, theta.vi_rate,
-                                beta.vi_shape, beta.vi_rate)
+        llh = compute_pois_llh(
+            X.data,
+            X.row,
+            X.col,
+            theta.vi_shape,
+            theta.vi_rate,
+            beta.vi_shape,
+            beta.vi_rate,
+        )
     except NameError:
-        e_rate = (theta.e_x[X.row] *  beta.e_x[X.col]).sum(axis=1)
+        e_rate = (theta.e_x[X.row] * beta.e_x[X.col]).sum(axis=1)
         llh = X.data * np.log(e_rate) - e_rate - gammaln(X.data + 1)
     return llh
 
@@ -408,7 +449,7 @@ def mean_negative_pois_llh(X, *, theta, beta, **kwargs):
     must be passed to the function as a keyword argument, and the function
     will accept unused keyword args.
     """
-    return np.mean( -pois_llh_pointwise(X=X, theta=theta, beta=beta) )
+    return np.mean(-pois_llh_pointwise(X=X, theta=theta, beta=beta))
 
 
 def pois_llh_pointwise2(X, *, theta, beta, delta, datasetno, **kwargs):
@@ -435,10 +476,17 @@ def pois_llh_pointwise2(X, *, theta, beta, delta, datasetno, **kwargs):
     will accept unused keyword args.
     """
     try:
-        llh = compute_pois_llh2(X[datasetno].data, X[datasetno].row, X[datasetno].col,
-                                theta.vi_shape, theta.vi_rate,
-                                beta.vi_shape, beta.vi_rate,
-                                delta.vi_shape, delta.vi_rate) 
+        llh = compute_pois_llh2(
+            X[datasetno].data,
+            X[datasetno].row,
+            X[datasetno].col,
+            theta.vi_shape,
+            theta.vi_rate,
+            beta.vi_shape,
+            beta.vi_rate,
+            delta.vi_shape,
+            delta.vi_rate,
+        )
     except NameError:
         e_rate = (theta.e_x[X.row] * (beta.e_x[X.col] + delta.e_x[X.col])).sum(axis=1)
         llh = X.data * np.log(e_rate) - e_rate - gammaln(X.data + 1)
@@ -468,7 +516,11 @@ def mean_negative_pois_llh2(X, *, theta, beta, delta, datasetno, **kwargs):
     must be passed to the function as a keyword argument, and the function
     will accept unused keyword args.
     """
-    return np.mean( -pois_llh_pointwise2(X=X, theta=theta, beta=beta, delta=delta, datasetno=datasetno) )
+    return np.mean(
+        -pois_llh_pointwise2(
+            X=X, theta=theta, beta=beta, delta=delta, datasetno=datasetno
+        )
+    )
 
 
 class HPF_Gamma(object):
@@ -510,23 +562,23 @@ class HPF_Gamma(object):
         -------
             A randomly initialized HPF_Gamma instance
         """
-        vi_shape = np.random.uniform(0.5 * shape_prior, 1.5 * shape_prior,
-                                     dims).astype(dtype)
-        vi_rate  = np.random.uniform(0.5 * rate_prior, 1.5 * rate_prior,
-                                     dims).astype(dtype)
-        return HPF_Gamma(vi_shape,vi_rate)
-
+        vi_shape = np.random.uniform(0.5 * shape_prior, 1.5 * shape_prior, dims).astype(
+            dtype
+        )
+        vi_rate = np.random.uniform(0.5 * rate_prior, 1.5 * rate_prior, dims).astype(
+            dtype
+        )
+        return HPF_Gamma(vi_shape, vi_rate)
 
     def __init__(self, vi_shape, vi_rate):
         """Initializes HPF_Gamma with variational shape and rates"""
-        assert(vi_shape.shape == vi_rate.shape)
-        assert(vi_shape.dtype == vi_rate.dtype)
-        assert(np.all(vi_shape > 0))
-        assert(np.all(vi_rate > 0))
+        assert vi_shape.shape == vi_rate.shape
+        assert vi_shape.dtype == vi_rate.dtype
+        assert np.all(vi_shape > 0)
+        assert np.all(vi_rate > 0)
         self.vi_shape = vi_shape
         self.vi_rate = vi_rate
         self.dtype = vi_shape.dtype
-
 
     def __eq__(self, other):
         if isinstance(other, self.__class__):
@@ -536,12 +588,10 @@ class HPF_Gamma(object):
             return shape_equal and rate_equal and dtype_equal
         return False
 
-
     @property
     def dims(self):
         assert self.vi_shape.shape == self.vi_rate.shape
         return self.vi_shape.shape
-
 
     @property
     def e_x(self):
@@ -550,21 +600,21 @@ class HPF_Gamma(object):
         """
         return self.vi_shape / self.vi_rate
 
-
     @property
     def e_logx(self):
         """Expectation of the log of random variable given variational
         distribution(s)"""
         return digamma(self.vi_shape) - np.log(self.vi_rate)
 
-
     @property
     def entropy(self):
         """Entropy of variational Gammas"""
-        return  self.vi_shape - np.log(self.vi_rate) \
-                + gammaln(self.vi_shape) \
-                + (1 - self.vi_shape) * digamma(self.vi_shape)
-
+        return (
+            self.vi_shape
+            - np.log(self.vi_rate)
+            + gammaln(self.vi_shape)
+            + (1 - self.vi_shape) * digamma(self.vi_shape)
+        )
 
     def sample(self, nsamples=1):
         """Sample from variational distributions
@@ -582,12 +632,11 @@ class HPF_Gamma(object):
         """
         samples = []
         for i in range(nsamples):
-            samples.append(np.random.gamma(self.vi_shape, 1/self.vi_rate).T)
+            samples.append(np.random.gamma(self.vi_shape, 1 / self.vi_rate).T)
         return np.stack(samples).T
 
-
     def combine(self, other, other_ixs):
-        """ Combine with another HPF_Gamma
+        """Combine with another HPF_Gamma
 
         Useful for combining variational distributions from training data with
         variational distributions from cells that were projected onto frozen
@@ -610,9 +659,8 @@ class HPF_Gamma(object):
         assert len(np.unique(other_ixs)) == len(other_ixs)
         assert self.dims[0] + other.dims[0] > np.max(other_ixs)
 
-        new_dims = [self.dims[0]+other.dims[0], *self.dims[1:]]
-        self_ixs = np.setdiff1d(np.arange(new_dims[0]),
-                other_ixs)
+        new_dims = [self.dims[0] + other.dims[0], *self.dims[1:]]
+        self_ixs = np.setdiff1d(np.arange(new_dims[0]), other_ixs)
 
         new_vi_shape = np.empty(new_dims, dtype=self.dtype)
         new_vi_shape[self_ixs] = self.vi_shape
@@ -626,7 +674,7 @@ class HPF_Gamma(object):
 
 
 class scIHPF(BaseEstimator):
-    """scHPF components which are the building blocks for integrative HPF 
+    """scHPF components which are the building blocks for integrative HPF
     Parameters
     ----------
     nfactors: int
@@ -670,30 +718,32 @@ class scIHPF(BaseEstimator):
     verbose: bool (optional, default True)
             Print messages at each check_freq
     """
+
     def __init__(
-            self,
-            nfactors,
-            a=0.3,
-            ap=1,
-            bp=None,
-            c=0.3,
-            cp=1,
-            dp=None,
-            min_iter=30,
-            max_iter=500,
-            check_freq=10,
-            epsilon=0.001,
-            better_than_n_ago=5,
-            dtype=np.float64,
-            xi=None,
-            theta=None,
-            eta=None,
-            beta=None,
-            zeta=None,
-            delta=None,
-            loss=[],
-            verbose=True,
-            ):
+        self,
+        nfactors,
+        a=0.3,
+        ap=1,
+        bp=None,
+        c=0.3,
+        cp=1,
+        dp=None,
+        min_iter=30,
+        max_iter=500,
+        check_freq=10,
+        epsilon=0.001,
+        better_than_n_ago=5,
+        dtype=np.float64,
+        xi=None,
+        theta=None,
+        eta=None,
+        beta=None,
+        zeta=None,
+        delta=None,
+        loss=[],
+        verbose=True,
+        dataset_ratio=0.1,
+    ):
         """Initialize HPF instance"""
         self.nfactors = nfactors
         self.a = a
@@ -716,22 +766,21 @@ class scIHPF(BaseEstimator):
 
         self.theta = theta
         self.beta = beta
-        self.delta = delta 
+        self.delta = delta
 
         self.loss = []
-        
-        np.random.seed(0)
 
+        # np.random.seed(0)
+
+        self.dataset_ratio = dataset_ratio
 
     @property
     def ngenes(self):
         return self.eta.dims[0] if self.eta is not None else None
 
-
     @property
     def ncells(self):
         return self.xi.dims[0] if self.xi is not None else None
-
 
     def cell_scores(self):
         cells = []
@@ -749,7 +798,6 @@ class scIHPF(BaseEstimator):
             temp = self.zeta[k].e_x[:, None] * self.delta[k].e_x
             genes.append(temp)
         return genes
-
 
     def pois_llh_pointwise(self, X, theta=None, beta=None):
         """Poisson log-likelihood (for each nonzero data)
@@ -773,15 +821,11 @@ class scIHPF(BaseEstimator):
         beta = self.beta if beta is None else beta
         return ls.pois_llh_pointwise(X=X, theta=theta, beta=beta)
 
-
     def mean_negative_pois_llh(X, theta=None, beta=None, **kwargs):
-        """Convenience method for mean negative llh of nonzero entries
-
-        """
+        """Convenience method for mean negative llh of nonzero entries"""
         theta = self.theta if theta is None else theta
         beta = self.beta if beta is None else beta
         return ls.mean_negative_pois_llh(X=X, theta=theta, beta=beta)
-
 
     def fit(self, X, **kwargs):
         """Fit an scHPF model
@@ -794,8 +838,7 @@ class scIHPF(BaseEstimator):
             loss function to use for fit. set to negative poisson likelihood
             of X if not given
         """
-        (bp, dp, xi, eta, zeta, theta, beta, delta, loss) = self._fit(
-                X, **kwargs)
+        (bp, dp, xi, eta, zeta, theta, beta, delta, loss) = self._fit(X, **kwargs)
         self.bp = bp
         self.dp = dp
         self.xi = xi
@@ -803,10 +846,9 @@ class scIHPF(BaseEstimator):
         self.zeta = zeta
         self.theta = theta
         self.beta = beta
-        self.delta = delta 
+        self.delta = delta
         self.loss = loss
         return self
-
 
     def _score(self, capacity, loading):
         """Get the hierarchically normalized loadings which we call the cell
@@ -824,13 +866,24 @@ class scIHPF(BaseEstimator):
         -------
         score : ndarray
         """
-        assert(loading.dims[0] == capacity.dims[0])
-        return loading.e_x * capacity.e_x[:,None]
+        assert loading.dims[0] == capacity.dims[0]
+        return loading.e_x * capacity.e_x[:, None]
 
-
-    def _fit(self, X, freeze_shared_genes=False, freeze_genes=False, reinit=True, loss_function=None,
-            min_iter=None, max_iter=None, epsilon=None, check_freq=None,
-            checkstep_function=None, dataset_ratio=0.1, verbose=None):
+    def _fit(
+        self,
+        X,
+        freeze_shared_genes=False,
+        freeze_genes=False,
+        reinit=True,
+        loss_function=None,
+        min_iter=None,
+        max_iter=None,
+        epsilon=None,
+        check_freq=None,
+        checkstep_function=None,
+        dataset_ratio=0.1,
+        verbose=None,
+    ):
         """Combined internal fit/transform function
 
         Parameters
@@ -893,13 +946,15 @@ class scIHPF(BaseEstimator):
             loss at each checkstep
         """
         # local (convenience) vars for model
-        
+
         nfactors = self.nfactors
         ndatasets = len(X)
         a, ap, c, cp = self.a, self.ap, self.c, self.cp
 
         # get empirically set hyperparameters and variational distributions
-        bp, dp, xi, eta, zeta, theta, beta, delta = self._setup(X, freeze_shared_genes, freeze_genes, reinit)
+        bp, dp, xi, eta, zeta, theta, beta, delta = self._setup(
+            X, freeze_shared_genes, freeze_genes, reinit
+        )
 
         # Make first updates for hierarchical shape prior
         # (vi_shape is constant, but want to update full distribution)
@@ -908,16 +963,14 @@ class scIHPF(BaseEstimator):
             xi[i].vi_shape[:] = ap + nfactors * a
             if not freeze_genes:
                 delta[i].vi_shape[:] = cp + nfactors * c
-        
+
         if not freeze_shared_genes:
             eta.vi_shape[:] = cp + nfactors * c
-
 
         # setup loss function as mean negative llh of nonzero training data
         # if the loss function is not given
         if loss_function is None:
-            loss_function = loss_function_for_data(
-                    mean_negative_pois_llh2, X)
+            loss_function = loss_function_for_data(mean_negative_pois_llh2, X)
 
         ## init
         loss, pct_change = [], []
@@ -927,23 +980,35 @@ class scIHPF(BaseEstimator):
         epsilon = self.epsilon if epsilon is None else epsilon
         check_freq = self.check_freq if check_freq is None else check_freq
         verbose = self.verbose if verbose is None else verbose
-        
+
         for t in range(max_iter):
 
             # Compute X Phi for each batch
-            if t==0 and reinit: #randomize phi for first iteration
+            if t == 0 and reinit:  # randomize phi for first iteration
                 Xphi_data = []
                 for i in range(ndatasets):
-                    random_phi = np.random.dirichlet( np.hstack((np.ones(nfactors), np.ones(nfactors)* dataset_ratio))
-                            , X[i].data.shape[0])
-                    Xphi_data.append(X[i].data[:,None] * random_phi)
+                    random_phi = np.random.dirichlet(
+                        np.hstack(
+                            (np.ones(nfactors), np.ones(nfactors) * dataset_ratio)
+                        ),
+                        X[i].data.shape[0],
+                    )
+                    Xphi_data.append(X[i].data[:, None] * random_phi)
             else:
-                # For each batch compute X phi 
+                # For each batch compute X phi
                 Xphi_data = []
-                for i in range(ndatasets):              
-                    Xphi_data_temp = compute_Xphi_data(X[i].data, X[i].row, X[i].col,
-                                            theta[i].vi_shape, theta[i].vi_rate,
-                                            beta.vi_shape, beta.vi_rate, delta[i].vi_shape, delta[i].vi_rate,)
+                for i in range(ndatasets):
+                    Xphi_data_temp = compute_Xphi_data(
+                        X[i].data,
+                        X[i].row,
+                        X[i].col,
+                        theta[i].vi_shape,
+                        theta[i].vi_rate,
+                        beta.vi_shape,
+                        beta.vi_rate,
+                        delta[i].vi_shape,
+                        delta[i].vi_rate,
+                    )
                     Xphi_data.append(Xphi_data_temp)
 
             ngenes = beta.vi_shape.shape[0]
@@ -954,51 +1019,79 @@ class scIHPF(BaseEstimator):
                 beta.vi_shape = c * np.ones((ngenes, nfactors), dtype=dtype)
                 beta.vi_rate = np.zeros((ngenes, nfactors), dtype=dtype)
                 for k in range(ndatasets):
-                    if k==0:
+                    if k == 0:
                         firstiter = True
                     else:
                         firstiter = False
-                    beta.vi_shape = compute_shared_shape_update(beta.vi_shape, Xphi_data[k], X[k].col,
-                        ngenes, nfactors, c)
-                    beta.vi_rate = compute_shared_rate_update(beta.vi_rate, eta.vi_shape,
-                        eta.vi_rate, theta[k].vi_shape, theta[k].vi_rate, firstiter,)
+                    beta.vi_shape = compute_shared_shape_update(
+                        beta.vi_shape, Xphi_data[k], X[k].col, ngenes, nfactors, c
+                    )
+                    beta.vi_rate = compute_shared_rate_update(
+                        beta.vi_rate,
+                        eta.vi_shape,
+                        eta.vi_rate,
+                        theta[k].vi_shape,
+                        theta[k].vi_rate,
+                        firstiter,
+                    )
                 eta.vi_rate = np.mean(dp) + beta.e_x.sum(1)
 
-            # gene updates 
+            # gene updates
             if not freeze_genes:
-                for i in range(ndatasets): 
-                    delta[i].vi_shape = compute_loading_shape_update(Xphi_data[i], X[i].col,
-                            ngenes, nfactors, c)
-                    delta[i].vi_rate = compute_loading_rate_update(zeta[i].vi_shape,
-                            zeta[i].vi_rate, theta[i].vi_shape, theta[i].vi_rate)
+                for i in range(ndatasets):
+                    delta[i].vi_shape = compute_loading_shape_update(
+                        Xphi_data[i], X[i].col, ngenes, nfactors, c
+                    )
+                    delta[i].vi_rate = compute_loading_rate_update(
+                        zeta[i].vi_shape,
+                        zeta[i].vi_rate,
+                        theta[i].vi_shape,
+                        theta[i].vi_rate,
+                    )
                     zeta[i].vi_rate = dp[i] + delta[i].e_x.sum(1)
 
-                    
             # cell updates
             for i in range(ndatasets):
                 ncells = X[i].shape[0]
-                theta[i].vi_shape = compute_cell_shape_update(Xphi_data[i], X[i].row,
-                                                            ncells, nfactors, a)
-                theta[i].vi_rate = compute_cell_rate_update(xi[i].vi_shape, xi[i].vi_rate,
-                        beta.vi_shape, beta.vi_rate, delta[i].vi_shape, delta[i].vi_rate)
+                theta[i].vi_shape = compute_cell_shape_update(
+                    Xphi_data[i], X[i].row, ncells, nfactors, a
+                )
+                theta[i].vi_rate = compute_cell_rate_update(
+                    xi[i].vi_shape,
+                    xi[i].vi_rate,
+                    beta.vi_shape,
+                    beta.vi_rate,
+                    delta[i].vi_shape,
+                    delta[i].vi_rate,
+                )
                 xi[i].vi_rate = bp[i] + theta[i].e_x.sum(1)
-
 
             # record llh/percent change and check for convergence
             if t % check_freq == 0:
 
                 # chech llh
                 # vX = validation_data if validation_data is not None else X
-                try :
+                try:
                     curr = 0
                     for i in range(ndatasets):
                         temp = loss_function(
-                                    a=a, ap=ap, bp=bp[i], c=c, cp=cp, dp=dp[i],
-                                    xi=xi[i], eta=eta, theta=theta[i], beta=beta, delta=delta[i], datasetno=i)
+                            a=a,
+                            ap=ap,
+                            bp=bp[i],
+                            c=c,
+                            cp=cp,
+                            dp=dp[i],
+                            xi=xi[i],
+                            eta=eta,
+                            theta=theta[i],
+                            beta=beta,
+                            delta=delta[i],
+                            datasetno=i,
+                        )
                         curr += temp
                     loss.append(curr)
                 except NameError as e:
-                    print('Invalid loss function')
+                    print("Invalid loss function")
                     raise e
 
                 # calculate percent change
@@ -1008,12 +1101,14 @@ class scIHPF(BaseEstimator):
                 except IndexError:
                     pct_change.append(100)
                 if verbose:
-                    msg = '[Iter. {0: >4}]  loss:{1:.6f}  pct:{2:.9f}'.format(
-                            t, curr, pct_change[-1])
+                    msg = "[Iter. {0: >4}]  loss:{1:.6f}  pct:{2:.9f}".format(
+                        t, curr, pct_change[-1]
+                    )
                     print(msg)
                 if checkstep_function is not None:
-                    checkstep_function(bp=bp, dp=dp, xi=xi, eta=eta, theta=theta,
-                            beta=beta, t=t)
+                    checkstep_function(
+                        bp=bp, dp=dp, xi=xi, eta=eta, theta=theta, beta=beta, t=t
+                    )
 
                 # check convergence
                 if len(loss) > 3 and t >= min_iter:
@@ -1021,24 +1116,24 @@ class scIHPF(BaseEstimator):
                     current_small = np.abs(pct_change[-1]) < self.epsilon
                     prev_small = np.abs(pct_change[-2]) < self.epsilon
                     not_inflection = not (
-                            (np.abs(loss[-3]) < np.abs(prev)) \
-                            and (np.abs(prev) > np.abs(curr)))
+                        (np.abs(loss[-3]) < np.abs(prev))
+                        and (np.abs(prev) > np.abs(curr))
+                    )
                     converged = current_small and prev_small and not_inflection
                     if converged:
                         if verbose:
-                            print('converged')
+                            print("converged")
                         break
 
                     # getting worse, and has been for better_than_n_ago checks
                     # (don't waste time on a bad run)
-                    if len(loss) > self.better_than_n_ago \
-                            and self.better_than_n_ago:
+                    if len(loss) > self.better_than_n_ago and self.better_than_n_ago:
                         nprev = loss[-self.better_than_n_ago]
                         worse_than_n_ago = np.abs(nprev) < np.abs(curr)
                         getting_worse = np.abs(prev) < np.abs(curr)
                         if worse_than_n_ago and getting_worse:
                             if verbose:
-                                print('getting worse break')
+                                print("getting worse break")
                             break
 
             # TODO message or warning or something
@@ -1047,8 +1142,9 @@ class scIHPF(BaseEstimator):
 
         return (bp, dp, xi, eta, zeta, theta, beta, delta, loss)
 
-
-    def _setup(self, X, freeze_shared_genes=False, freeze_genes=False, reinit=True, clip=True):
+    def _setup(
+        self, X, freeze_shared_genes=False, freeze_genes=False, reinit=True, clip=True
+    ):
         """Setup variational distributions
 
         Parameters
@@ -1085,57 +1181,89 @@ class scIHPF(BaseEstimator):
         a, ap, c, cp = self.a, self.ap, self.c, self.cp
         bp, dp = self.bp, self.dp
 
-        xi, eta, zeta, theta, beta, delta = (self.xi, self.eta, self.zeta, self.theta, self.beta, self.delta)
+        xi, eta, zeta, theta, beta, delta = (
+            self.xi,
+            self.eta,
+            self.zeta,
+            self.theta,
+            self.beta,
+            self.delta,
+        )
 
         # empirically set bp and dp
         bp, dp = self._get_empirical_hypers(X, freeze_genes, clip)
 
-
         if reinit or (xi is None):
-            xi = [ HPF_Gamma.random_gamma_factory((X[k].shape[0],), ap, bp[k],
-                    dtype=self.dtype) for k in range(len(X)) ] 
+            xi = [
+                HPF_Gamma.random_gamma_factory(
+                    (X[k].shape[0],), ap, bp[k], dtype=self.dtype
+                )
+                for k in range(len(X))
+            ]
 
-        
         if reinit or (theta is None):
-            theta = [ HPF_Gamma.random_gamma_factory((X[k].shape[0],nfactors), a, bp[k],
-                    dtype=self.dtype) for k in range(len(X)) ] 
+            theta = [
+                HPF_Gamma.random_gamma_factory(
+                    (X[k].shape[0], nfactors), a, bp[k], dtype=self.dtype
+                )
+                for k in range(len(X))
+            ]
 
         # Check if variational distributions for genes exist, create if not
         # Error if freeze_genes and eta and beta don't exists
         if freeze_genes:
             if eta is None or beta is None:
-                msg = 'To fit with frozen gene variational distributions ' \
-                    + '(`freeze_genes`==True), eta and beta must be set to ' \
-                    + 'valid HPF_Gamma instances.'
+                msg = (
+                    "To fit with frozen gene variational distributions "
+                    + "(`freeze_genes`==True), eta and beta must be set to "
+                    + "valid HPF_Gamma instances."
+                )
                 raise ValueError(msg)
-            
+
             if reinit or (zeta is None):
-                zeta = [ HPF_Gamma.random_gamma_factory((ngenes,), cp, dp[i],
-                        dtype=self.dtype) for i in range(ndatasets) ] 
-            
+                zeta = [
+                    HPF_Gamma.random_gamma_factory(
+                        (ngenes,), cp, dp[i], dtype=self.dtype
+                    )
+                    for i in range(ndatasets)
+                ]
+
             if reinit or (delta is None):
-                delta = [ HPF_Gamma.random_gamma_factory((ngenes,nfactors),
-                        c, dp[i], dtype=self.dtype) for i in range(ndatasets) ]
+                delta = [
+                    HPF_Gamma.random_gamma_factory(
+                        (ngenes, nfactors), c, dp[i], dtype=self.dtype
+                    )
+                    for i in range(ndatasets)
+                ]
         else:
 
             if reinit or (eta is None):
-                eta = HPF_Gamma.random_gamma_factory((ngenes,), cp, np.mean(dp),
-                        dtype=self.dtype)
+                eta = HPF_Gamma.random_gamma_factory(
+                    (ngenes,), cp, np.mean(dp), dtype=self.dtype
+                )
 
             if reinit or (beta is None):
-                beta = HPF_Gamma.random_gamma_factory((ngenes,nfactors),
-                        c, np.mean(dp), dtype=self.dtype)
+                beta = HPF_Gamma.random_gamma_factory(
+                    (ngenes, nfactors), c, np.mean(dp), dtype=self.dtype
+                )
 
             if reinit or (zeta is None):
-                zeta = [ HPF_Gamma.random_gamma_factory((ngenes,), cp, dp[i],
-                        dtype=self.dtype) for i in range(ndatasets) ] 
-            
+                zeta = [
+                    HPF_Gamma.random_gamma_factory(
+                        (ngenes,), cp, dp[i], dtype=self.dtype
+                    )
+                    for i in range(ndatasets)
+                ]
+
             if reinit or (delta is None):
-                delta = [ HPF_Gamma.random_gamma_factory((ngenes,nfactors),
-                        c, dp[i], dtype=self.dtype) for i in range(ndatasets) ]
+                delta = [
+                    HPF_Gamma.random_gamma_factory(
+                        (ngenes, nfactors), c, dp[i], dtype=self.dtype
+                    )
+                    for i in range(ndatasets)
+                ]
 
         return (bp, dp, xi, eta, zeta, theta, beta, delta)
-
 
     def _get_empirical_hypers(self, X, freeze_genes=False, clip=False):
         """Get empirical values for bp, dp
@@ -1157,32 +1285,29 @@ class scIHPF(BaseEstimator):
             axis_sum = X.sum(axis=axis)
             return np.mean(axis_sum) / np.var(axis_sum)
 
-        
         if bp is None:
-            bp = [ self.ap * mean_var_ratio(X_data, axis=1) for X_data in X ] 
-        
-        
-        if dp is None: # dp first in case of error
+            bp = [self.ap * mean_var_ratio(X_data, axis=1) for X_data in X]
+
+        if dp is None:  # dp first in case of error
             if freeze_genes:
-                msg = 'dp is None and cannot be set'
-                msg += ' when freeze_genes is True.'
+                msg = "dp is None and cannot be set"
+                msg += " when freeze_genes is True."
                 raise ValueError(msg)
             else:
-                dp = [ self.cp * mean_var_ratio(X_data, axis=0) for X_data in X ] 
-                
+                dp = [self.cp * mean_var_ratio(X_data, axis=0) for X_data in X]
+
                 if clip and bp > 1000 * dp:
                     old_val = dp
-                    dp = [ bpc/1000.0 for bpc in bp]
-                    print('Clipping dp: was {} now {}'.format(old_val, dp))
+                    dp = [bpc / 1000.0 for bpc in bp]
+                    print("Clipping dp: was {} now {}".format(old_val, dp))
 
         return bp, dp
 
-
     def _initialize(self, X, freeze_genes=False):
-        """Shortcut to setup random distributions & set variables
-        """
-        bp, dp, xi, eta, zeta, theta, beta, delta = self._setup(X, freeze_genes,
-                reinit=True)
+        """Shortcut to setup random distributions & set variables"""
+        bp, dp, xi, eta, zeta, theta, beta, delta = self._setup(
+            X, freeze_genes, reinit=True
+        )
         self.bp = bp
         self.dp = dp
         self.xi = xi
@@ -1190,7 +1315,7 @@ class scIHPF(BaseEstimator):
         self.zeta = zeta
         self.theta = theta
         self.beta = beta
-        self.delta = delta 
+        self.delta = delta
 
 
 def combine_across_cells(x, y, y_ixs):
@@ -1233,20 +1358,22 @@ def combine_across_cells(x, y, y_ixs):
     return xy
 
 
-def run_trials(X, nfactors,
-        ntrials=5,
-        min_iter=30,
-        max_iter=50,
-        check_freq=10,
-        epsilon=0.001,
-        better_than_n_ago=5,
-        dtype=np.float64,
-        verbose=True,
-        vcells = None,
-        vX = None,
-        loss_function=None,
-        model_kwargs = {}
-        ):
+def run_trials(
+    X,
+    nfactors,
+    ntrials=15,
+    min_iter=30,
+    max_iter=500,
+    check_freq=10,
+    epsilon=0.001,
+    better_than_n_ago=5,
+    dtype=np.float64,
+    verbose=True,
+    vcells=None,
+    vX=None,
+    loss_function=None,
+    model_kwargs={},
+):
     """
     Train with multiple random initializations, selecting model with best loss
 
@@ -1303,17 +1430,22 @@ def run_trials(X, nfactors,
     best_loss, best_model, best_t = np.finfo(np.float64).max, None, None
     for t in range(ntrials):
         # make a new model
-        print('scIHPF running')
-        model = scIHPF(nfactors=nfactors,
-                    min_iter=min_iter, max_iter=max_iter,
-                    check_freq=check_freq, epsilon=epsilon,
-                    better_than_n_ago=better_than_n_ago,
-                    verbose=verbose, dtype=dtype,
-                    **model_kwargs
-                    )
+        np.random.seed(t)
+        print("scIHPF running with seed {}".format(t))
+        model = scIHPF(
+            nfactors=nfactors,
+            min_iter=min_iter,
+            max_iter=max_iter,
+            check_freq=check_freq,
+            epsilon=epsilon,
+            better_than_n_ago=better_than_n_ago,
+            verbose=verbose,
+            dtype=dtype,
+            **model_kwargs
+        )
 
         # fit the model
-        model.fit(X)
+        model.fit(X, **model_kwargs)
 
         loss = model.loss[-1]
         if loss < best_loss:
@@ -1321,10 +1453,9 @@ def run_trials(X, nfactors,
             best_loss = loss
             best_t = t
             if verbose:
-                print('New best!'.format(t))
+                print("New best!".format(t))
         if verbose:
-            print('Trial {0} loss: {1:.6f}'.format(t, loss))
-            print('Best loss: {0:.6f} (trial {1})'.format(best_loss, best_t))
+            print("Trial {0} loss: {1:.6f}".format(t, loss))
+            print("Best loss: {0:.6f} (trial {1})".format(best_loss, best_t))
 
     return best_model
-
