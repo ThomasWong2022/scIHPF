@@ -1,4 +1,4 @@
-datasets = ["humanpancreas"]
+datasets = ["humanpancreas","10Xmouse","10Xpbmc"]
 
 ## Import scripts for the dimension reduction methods
 import IHPF
@@ -61,7 +61,7 @@ for dataset in datasets:
         model = IHPF.run_trials(
             Xlist,
             no_cell_types,
-            ntrials=15,
+            ntrials=20,
             max_iter=500,
             model_kwargs={"dataset_ratio": l},
         )
