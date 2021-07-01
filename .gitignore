@@ -133,6 +133,7 @@ Data/scgen/*
 Data/scgen/data/*.h5ad
 Data/temp/*.h5ad
 *.h5ad
-Result/Dataset_techs_cellmaps_all_v2.pdf
-Result/Dataset_techs_genemaps_all_v2.pdf
-IHPF/data/
+Result/*.pdf
+IHPF/data/*
+*.csv
+IHPF/schpf/*
