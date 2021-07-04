@@ -1,1 +1,1 @@
-from IHPF import scIHPF
+from .IHPF import scIHPF
